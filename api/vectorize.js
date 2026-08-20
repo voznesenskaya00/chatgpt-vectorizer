@@ -9,11 +9,16 @@ export default async function handler(req, res) {
   try {
     const body = req.body || {};
 
-    // ChatGPT передаёт загруженный файл через openaiFileIdRefs.
-    // Нам нужна временная ссылка на этот файл.
+    // ==========================================
+    // 1. Получаем изображение от ChatGPT
+    // ==========================================
+
     let imageUrl = null;
 
-    if (Array.isArray(body.openaiFileIdRefs) && body.openaiFileIdRefs.length > 0) {
+    if (
+      Array.isArray(body.openaiFileIdRefs) &&
+      body.openaiFileIdRefs.length > 0
+    ) {
       const file = body.openaiFileIdRefs[0];
 
       imageUrl =
@@ -23,7 +28,7 @@ export default async function handler(req, res) {
         null;
     }
 
-    // Для тестирования также разрешаем обычный image_url.
+    // Для ручного тестирования через image_url
     if (!imageUrl && typeof body.image_url === "string") {
       imageUrl = body.image_url;
     }
@@ -31,9 +36,14 @@ export default async function handler(req, res) {
     if (!imageUrl) {
       return res.status(400).json({
         error: "Не найдено изображение",
-        details: "ChatGPT должен передать openaiFileIdRefs с download_link."
+        details:
+          "ChatGPT должен передать openaiFileIdRefs с download_link."
       });
     }
+
+    // ==========================================
+    // 2. Получаем API KEY
+    // ==========================================
 
     const apiKey = process.env.GENAPI_API_KEY;
 
@@ -43,18 +53,24 @@ export default async function handler(req, res) {
       });
     }
 
-    // Отправляем изображение в GenAPI Image2SVG.
-    const response = await fetch(
+    // ==========================================
+    // 3. Запускаем векторизацию
+    // ==========================================
+
+    const createResponse = await fetch(
       "https://api.gen-api.ru/api/v1/networks/image-2-svg",
       {
         method: "POST",
+
         headers: {
-          "Authorization": `Bearer ${apiKey}`,
+          Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
-          "Accept": "application/json"
+          Accept: "application/json"
         },
+
         body: JSON.stringify({
-          is_sync: true,
+          is_sync: false,
+
           image_url: imageUrl,
 
           colormode: "color",
@@ -73,38 +89,111 @@ export default async function handler(req, res) {
       }
     );
 
-    const data = await response.json();
+    const createData = await createResponse.json();
 
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: "Ошибка GenAPI",
-        details: data
+    if (!createResponse.ok) {
+      return res.status(createResponse.status).json({
+        error: "Ошибка GenAPI при запуске векторизации",
+        details: createData
       });
     }
 
-    // Если GenAPI сразу вернул результат.
-    if (data.result && Array.isArray(data.result)) {
-      return res.status(200).json({
-        success: true,
-        message: "Изображение успешно векторизовано.",
-        svg_url: data.result[0],
-        result: data.result
+    const requestId = createData.request_id;
+
+    if (!requestId) {
+      return res.status(500).json({
+        error: "GenAPI не вернул request_id",
+        details: createData
       });
     }
 
-    // Если API вернул request_id.
-    if (data.request_id) {
-      return res.status(200).json({
-        success: true,
-        message: "Векторизация запущена.",
-        request_id: data.request_id,
-        status: data.status || "processing"
-      });
+    // ==========================================
+    // 4. Ждём готовности результата
+    // ==========================================
+
+    const maxAttempts = 15;
+    const delay = 3000;
+
+    let resultData = null;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, delay));
+
+      const resultResponse = await fetch(
+        `https://api.gen-api.ru/api/v1/request/get/${requestId}`,
+        {
+          method: "GET",
+
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            Accept: "application/json"
+          }
+        }
+      );
+
+      resultData = await resultResponse.json();
+
+      if (!resultResponse.ok) {
+        return res.status(resultResponse.status).json({
+          error: "Ошибка при получении результата GenAPI",
+          details: resultData
+        });
+      }
+
+      // ========================================
+      // ГОТОВО
+      // ========================================
+
+      if (resultData.status === "success") {
+        const result = resultData.result;
+
+        if (Array.isArray(result) && result.length > 0) {
+          return res.status(200).json({
+            success: true,
+            message: "Изображение успешно векторизовано.",
+            request_id: requestId,
+            status: "success",
+            svg_url: result[0],
+            result: result
+          });
+        }
+
+        return res.status(200).json({
+          success: true,
+          request_id: requestId,
+          status: "success",
+          data: resultData
+        });
+      }
+
+      // ========================================
+      // ОШИБКА
+      // ========================================
+
+      if (
+        resultData.status === "failed" ||
+        resultData.status === "error"
+      ) {
+        return res.status(500).json({
+          error: "Векторизация завершилась ошибкой.",
+          request_id: requestId,
+          status: resultData.status,
+          details: resultData
+        });
+      }
     }
 
-    return res.status(200).json({
-      success: true,
-      data
+    // ==========================================
+    // 5. Если за время ожидания не успело
+    // ==========================================
+
+    return res.status(202).json({
+      success: false,
+      processing: true,
+      message:
+        "Векторизация ещё выполняется. Попробуйте запросить результат позже.",
+      request_id: requestId,
+      status: resultData?.status || "processing"
     });
 
   } catch (error) {

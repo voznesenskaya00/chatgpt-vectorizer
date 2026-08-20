@@ -73,18 +73,21 @@ export default async function handler(req, res) {
 
           image_url: imageUrl,
 
-          // Максимально детализированная векторизация
+          // Исходные настройки Image2SVG
           colormode: "color",
           hierarchical: "stacked",
           mode: "spline",
 
-          filter_speckle: 1,
-          color_precision: 10,
-          layer_difference: 8,
-          corner_threshold: 45,
-          length_threshold: 1,
-          max_iterations: 20,
-          splice_threshold: 30,
+          filter_speckle: 4,
+          color_precision: 6,
+          layer_difference: 16,
+          corner_threshold: 60,
+          length_threshold: 4,
+          max_iterations: 10,
+          splice_threshold: 45,
+
+          // Единственное изменение:
+          // более высокая точность координат SVG
           path_precision: 6
         })
       }

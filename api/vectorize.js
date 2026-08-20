@@ -1,5 +1,5 @@
 export default async function handler(req, res) {
-  // Разрешаем только POST
+  // Только POST
   if (req.method !== "POST") {
     return res.status(405).json({
       error: "Method not allowed"
@@ -10,7 +10,7 @@ export default async function handler(req, res) {
     const body = req.body || {};
 
     // ==========================================
-    // 1. Получаем изображение от ChatGPT
+    // 1. Получаем оригинальное изображение
     // ==========================================
 
     let imageUrl = null;
@@ -28,7 +28,7 @@ export default async function handler(req, res) {
         null;
     }
 
-    // Для ручного тестирования через image_url
+    // Ручной вариант
     if (!imageUrl && typeof body.image_url === "string") {
       imageUrl = body.image_url;
     }
@@ -36,13 +36,12 @@ export default async function handler(req, res) {
     if (!imageUrl) {
       return res.status(400).json({
         error: "Не найдено изображение",
-        details:
-          "ChatGPT должен передать openaiFileIdRefs с download_link."
+        details: "Не передан оригинальный файл изображения."
       });
     }
 
     // ==========================================
-    // 2. Получаем API KEY
+    // 2. API KEY
     // ==========================================
 
     const apiKey = process.env.GENAPI_API_KEY;
@@ -54,8 +53,14 @@ export default async function handler(req, res) {
     }
 
     // ==========================================
-    // 3. Запускаем векторизацию
+    // 3. ВЕКТОРИЗАЦИЯ
     // ==========================================
+    //
+    // Здесь специально выставлены параметры
+    // на максимальное сохранение деталей.
+    //
+    // НЕ меняй их обратно на старые значения.
+    //
 
     const createResponse = await fetch(
       "https://api.gen-api.ru/api/v1/networks/image-2-svg",
@@ -73,22 +78,41 @@ export default async function handler(req, res) {
 
           image_url: imageUrl,
 
-          // Исходные настройки Image2SVG
+          // Цветное изображение
           colormode: "color",
+
+          // Сохраняем слои друг над другом
           hierarchical: "stacked",
+
+          // Для рукописных линий и иллюстрации
+          // оставляем плавные кривые
           mode: "spline",
 
-          filter_speckle: 4,
-          color_precision: 6,
-          layer_difference: 16,
-          corner_threshold: 60,
-          length_threshold: 4,
-          max_iterations: 10,
-          splice_threshold: 45,
+          // НЕ удаляем мелкие детали
+          filter_speckle: 0,
 
-          // Единственное изменение:
-          // более высокая точность координат SVG
-          path_precision: 6
+          // Больше цветовой информации
+          color_precision: 8,
+
+          // Не объединяем слишком много близких цветов
+          layer_difference: 8,
+
+          // Более аккуратно определяем контуры
+          corner_threshold: 45,
+
+          // Сохраняем более мелкие сегменты
+          length_threshold: 3.5,
+
+          // Больше итераций = более точная подгонка
+          max_iterations: 20,
+
+          // Более аккуратное соединение кривых
+          splice_threshold: 30,
+
+          // ВАЖНО:
+          // было 3, теперь 8
+          // это повышает точность координат SVG
+          path_precision: 8
         })
       }
     );
@@ -112,16 +136,18 @@ export default async function handler(req, res) {
     }
 
     // ==========================================
-    // 4. Ждём готовности результата
+    // 4. Ждём результат
     // ==========================================
 
-    const maxAttempts = 20;
+    const maxAttempts = 25;
     const delay = 3000;
 
     let resultData = null;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await new Promise(resolve =>
+        setTimeout(resolve, delay)
+      );
 
       const resultResponse = await fetch(
         `https://api.gen-api.ru/api/v1/request/get/${requestId}`,
@@ -188,14 +214,14 @@ export default async function handler(req, res) {
     }
 
     // ==========================================
-    // 5. Если за время ожидания не успело
+    // 5. Ещё обрабатывается
     // ==========================================
 
     return res.status(202).json({
       success: false,
       processing: true,
       message:
-        "Векторизация ещё выполняется. Попробуйте запросить результат позже.",
+        "Векторизация ещё выполняется.",
       request_id: requestId,
       status: resultData?.status || "processing"
     });

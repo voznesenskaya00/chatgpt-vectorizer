@@ -1,5 +1,4 @@
 export default async function handler(req, res) {
-  // Только POST
   if (req.method !== "POST") {
     return res.status(405).json({
       error: "Method not allowed"
@@ -10,7 +9,7 @@ export default async function handler(req, res) {
     const body = req.body || {};
 
     // ==========================================
-    // 1. Получаем оригинальное изображение
+    // 1. Получаем исходное изображение
     // ==========================================
 
     let imageUrl = null;
@@ -28,7 +27,6 @@ export default async function handler(req, res) {
         null;
     }
 
-    // Ручной вариант
     if (!imageUrl && typeof body.image_url === "string") {
       imageUrl = body.image_url;
     }
@@ -36,7 +34,7 @@ export default async function handler(req, res) {
     if (!imageUrl) {
       return res.status(400).json({
         error: "Не найдено изображение",
-        details: "Не передан оригинальный файл изображения."
+        details: "ChatGPT не передал изображение."
       });
     }
 
@@ -53,17 +51,11 @@ export default async function handler(req, res) {
     }
 
     // ==========================================
-    // 3. ВЕКТОРИЗАЦИЯ
+    // 3. СНАЧАЛА УЛУЧШАЕМ ИСХОДНИК
     // ==========================================
-    //
-    // Здесь специально выставлены параметры
-    // на максимальное сохранение деталей.
-    //
-    // НЕ меняй их обратно на старые значения.
-    //
 
-    const createResponse = await fetch(
-      "https://api.gen-api.ru/api/v1/networks/image-2-svg",
+    const upscaleResponse = await fetch(
+      "https://api.gen-api.ru/api/v1/networks/recraft-upscaler",
       {
         method: "POST",
 
@@ -78,79 +70,44 @@ export default async function handler(req, res) {
 
           image_url: imageUrl,
 
-          // Цветное изображение
-          colormode: "color",
+          model: "crisp-upscale",
 
-          // Сохраняем слои друг над другом
-          hierarchical: "stacked",
-
-          // Для рукописных линий и иллюстрации
-          // оставляем плавные кривые
-          mode: "spline",
-
-          // НЕ удаляем мелкие детали
-          filter_speckle: 0,
-
-          // Больше цветовой информации
-          color_precision: 8,
-
-          // Не объединяем слишком много близких цветов
-          layer_difference: 8,
-
-          // Более аккуратно определяем контуры
-          corner_threshold: 45,
-
-          // Сохраняем более мелкие сегменты
-          length_threshold: 3.5,
-
-          // Больше итераций = более точная подгонка
-          max_iterations: 20,
-
-          // Более аккуратное соединение кривых
-          splice_threshold: 30,
-
-          // ВАЖНО:
-          // было 3, теперь 8
-          // это повышает точность координат SVG
-          path_precision: 8
+          enable_safety_checker: false
         })
       }
     );
 
-    const createData = await createResponse.json();
+    const upscaleData = await upscaleResponse.json();
 
-    if (!createResponse.ok) {
-      return res.status(createResponse.status).json({
-        error: "Ошибка GenAPI при запуске векторизации",
-        details: createData
+    if (!upscaleResponse.ok) {
+      return res.status(upscaleResponse.status).json({
+        error: "Ошибка Recraft Crisp Upscale",
+        details: upscaleData
       });
     }
 
-    const requestId = createData.request_id;
+    const upscaleRequestId = upscaleData.request_id;
 
-    if (!requestId) {
+    if (!upscaleRequestId) {
       return res.status(500).json({
-        error: "GenAPI не вернул request_id",
-        details: createData
+        error: "Recraft Upscale не вернул request_id",
+        details: upscaleData
       });
     }
 
     // ==========================================
-    // 4. Ждём результат
+    // 4. Ждём улучшенное изображение
     // ==========================================
 
-    const maxAttempts = 25;
-    const delay = 3000;
+    let upscaleResult = null;
 
-    let resultData = null;
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    for (let attempt = 0; attempt < 30; attempt++) {
       await new Promise(resolve =>
-        setTimeout(resolve, delay)
+        setTimeout(resolve, 3000)
       );
 
-      const resultResponse = await fetch(
-        `https://api.gen-api.ru/api/v1/request/get/${requestId}`,
+      const response = await fetch(
+        `https://api.gen-api.ru/api/v1/request/get/${upscaleRequestId}`,
         {
           method: "GET",
 
@@ -161,69 +118,228 @@ export default async function handler(req, res) {
         }
       );
 
-      resultData = await resultResponse.json();
+      upscaleResult = await response.json();
 
-      if (!resultResponse.ok) {
-        return res.status(resultResponse.status).json({
-          error: "Ошибка при получении результата GenAPI",
-          details: resultData
+      if (!response.ok) {
+        return res.status(response.status).json({
+          error: "Ошибка получения результата Upscale",
+          details: upscaleResult
         });
       }
 
-      // ========================================
-      // ГОТОВО
-      // ========================================
-
-      if (resultData.status === "success") {
-        const result = resultData.result;
-
-        if (Array.isArray(result) && result.length > 0) {
-          return res.status(200).json({
-            success: true,
-            message: "Изображение успешно векторизовано.",
-            request_id: requestId,
-            status: "success",
-            svg_url: result[0],
-            result: result
-          });
-        }
-
-        return res.status(200).json({
-          success: true,
-          request_id: requestId,
-          status: "success",
-          data: resultData
-        });
+      if (upscaleResult.status === "success") {
+        break;
       }
-
-      // ========================================
-      // ОШИБКА
-      // ========================================
 
       if (
-        resultData.status === "failed" ||
-        resultData.status === "error"
+        upscaleResult.status === "failed" ||
+        upscaleResult.status === "error"
       ) {
         return res.status(500).json({
-          error: "Векторизация завершилась ошибкой.",
-          request_id: requestId,
-          status: resultData.status,
-          details: resultData
+          error: "Upscale завершился ошибкой",
+          details: upscaleResult
         });
       }
     }
 
+    if (
+      !upscaleResult ||
+      upscaleResult.status !== "success"
+    ) {
+      return res.status(202).json({
+        success: false,
+        processing: true,
+        message: "Улучшение изображения ещё выполняется.",
+        request_id: upscaleRequestId
+      });
+    }
+
     // ==========================================
-    // 5. Ещё обрабатывается
+    // 5. Получаем URL улучшенного изображения
     // ==========================================
 
-    return res.status(202).json({
-      success: false,
-      processing: true,
-      message:
-        "Векторизация ещё выполняется.",
-      request_id: requestId,
-      status: resultData?.status || "processing"
+    let enhancedImageUrl = null;
+
+    const output = upscaleResult.result || upscaleResult.output;
+
+    if (typeof output === "string") {
+      enhancedImageUrl = output;
+    }
+
+    if (Array.isArray(output) && output.length > 0) {
+      enhancedImageUrl = output[0];
+    }
+
+    if (
+      output &&
+      typeof output === "object"
+    ) {
+      enhancedImageUrl =
+        output.url ||
+        output.image_url ||
+        output.image ||
+        null;
+    }
+
+    if (!enhancedImageUrl) {
+      return res.status(500).json({
+        error: "Не удалось получить URL улучшенного изображения.",
+        details: upscaleResult
+      });
+    }
+
+    // ==========================================
+    // 6. ТЕПЕРЬ ВЕКТОРИЗУЕМ УЛУЧШЕННЫЙ ИСХОДНИК
+    // ==========================================
+
+    const vectorResponse = await fetch(
+      "https://api.gen-api.ru/api/v1/networks/image-2-svg",
+      {
+        method: "POST",
+
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          Accept: "application/json"
+        },
+
+        body: JSON.stringify({
+          is_sync: false,
+
+          image_url: enhancedImageUrl,
+
+          colormode: "color",
+          hierarchical: "stacked",
+          mode: "spline",
+
+          // Максимально сохраняем мелкие детали
+          filter_speckle: 1,
+
+          // Сохраняем больше цветовых оттенков
+          color_precision: 8,
+
+          // Меньше объединяем близкие цветовые слои
+          layer_difference: 8,
+
+          // Более аккуратные контуры
+          corner_threshold: 45,
+
+          length_threshold: 3,
+
+          max_iterations: 20,
+
+          splice_threshold: 30,
+
+          // Более точные координаты SVG
+          path_precision: 6
+        })
+      }
+    );
+
+    const vectorData = await vectorResponse.json();
+
+    if (!vectorResponse.ok) {
+      return res.status(vectorResponse.status).json({
+        error: "Ошибка GenAPI Image2SVG",
+        details: vectorData
+      });
+    }
+
+    const vectorRequestId = vectorData.request_id;
+
+    if (!vectorRequestId) {
+      return res.status(500).json({
+        error: "Image2SVG не вернул request_id",
+        details: vectorData
+      });
+    }
+
+    // ==========================================
+    // 7. Ждём SVG
+    // ==========================================
+
+    let svgResult = null;
+
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await new Promise(resolve =>
+        setTimeout(resolve, 3000)
+      );
+
+      const response = await fetch(
+        `https://api.gen-api.ru/api/v1/request/get/${vectorRequestId}`,
+        {
+          method: "GET",
+
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            Accept: "application/json"
+          }
+        }
+      );
+
+      svgResult = await response.json();
+
+      if (!response.ok) {
+        return res.status(response.status).json({
+          error: "Ошибка получения SVG",
+          details: svgResult
+        });
+      }
+
+      if (svgResult.status === "success") {
+        break;
+      }
+
+      if (
+        svgResult.status === "failed" ||
+        svgResult.status === "error"
+      ) {
+        return res.status(500).json({
+          error: "Векторизация завершилась ошибкой",
+          details: svgResult
+        });
+      }
+    }
+
+    if (
+      !svgResult ||
+      svgResult.status !== "success"
+    ) {
+      return res.status(202).json({
+        success: false,
+        processing: true,
+        message: "Векторизация ещё выполняется.",
+        request_id: vectorRequestId
+      });
+    }
+
+    const result = svgResult.result;
+
+    if (Array.isArray(result) && result.length > 0) {
+      return res.status(200).json({
+        success: true,
+        message: "Изображение успешно улучшено и векторизовано.",
+        request_id: vectorRequestId,
+        status: "success",
+        svg_url: result[0],
+        result: result
+      });
+    }
+
+    if (typeof result === "string") {
+      return res.status(200).json({
+        success: true,
+        message: "Изображение успешно улучшено и векторизовано.",
+        request_id: vectorRequestId,
+        status: "success",
+        svg_url: result,
+        result: [result]
+      });
+    }
+
+    return res.status(500).json({
+      error: "GenAPI не вернул ссылку на SVG.",
+      details: svgResult
     });
 
   } catch (error) {

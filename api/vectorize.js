@@ -73,18 +73,19 @@ export default async function handler(req, res) {
 
           image_url: imageUrl,
 
+          // Максимально детализированная векторизация
           colormode: "color",
           hierarchical: "stacked",
           mode: "spline",
 
-          filter_speckle: 4,
-          color_precision: 6,
-          layer_difference: 16,
-          corner_threshold: 60,
-          length_threshold: 4,
-          max_iterations: 10,
-          splice_threshold: 45,
-          path_precision: 3
+          filter_speckle: 1,
+          color_precision: 10,
+          layer_difference: 8,
+          corner_threshold: 45,
+          length_threshold: 1,
+          max_iterations: 20,
+          splice_threshold: 30,
+          path_precision: 6
         })
       }
     );
@@ -111,7 +112,7 @@ export default async function handler(req, res) {
     // 4. Ждём готовности результата
     // ==========================================
 
-    const maxAttempts = 15;
+    const maxAttempts = 20;
     const delay = 3000;
 
     let resultData = null;
